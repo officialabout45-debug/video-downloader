@@ -1,120 +1,84 @@
 import express from 'express';
-import path from 'path';
-import fs from 'fs';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import https from 'https';
-import http from 'http';
-import { fileURLToPath } from 'url';
+import cors from 'cors';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const execAsync = promisify(exec);
-const PORT = process.env.PORT || 3000;
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-// Enable CORS
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, PATCH, DELETE");
-  res.setHeader("Access-Control-Allow-Headers", "X-Requested-With,content-type,Authorization");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
-  next();
-});
-
+app.use(cors());
 app.use(express.json());
 
-const binaryPath = path.join(__dirname, "yt-dlp");
-
-async function ensureYtdl() {
-  if (!fs.existsSync(binaryPath)) {
-    try {
-      const response = await fetch("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux");
-      if (response.ok) {
-        const buffer = await response.arrayBuffer();
-        fs.writeFileSync(binaryPath, Buffer.from(buffer));
-        fs.chmodSync(binaryPath, "755");
+// Fallback Extractors for TikTok / Social Media
+async function fetchTikwmFallback(url) {
+  try {
+    const res = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.code === 0 && json.data) {
+        const d = json.data;
+        return {
+          title: d.title || "فيديو تيك توك",
+          duration: d.duration || 0,
+          thumbnail: d.cover || "",
+          uploader: d.author?.nickname || "مستخدم",
+          platform: "TikTok",
+          directUrl: d.play || d.wmplay || "",
+          formats: [{ ext: "mp4", resolution: "HD", url: d.play || "" }]
+        };
       }
-    } catch (err) {}
-  }
-  return binaryPath;
+    }
+  } catch (err) {}
+  return null;
 }
 
 async function fetchCobaltFormats(url) {
   const endpoints = ["https://api.cobalt.tools/", "https://co.wuk.sh/"];
-  const callCobalt = async (isAudioOnly) => {
-    const payload = isAudioOnly ? { url, downloadMode: "audio" } : { url, downloadMode: "video" };
-    for (const endpoint of endpoints) {
-      try {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Accept": "application/json", "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.url) return json.url;
-        }
-      } catch (err) {}
-    }
-    return null;
-  };
-  const [videoUrl, audioUrl] = await Promise.all([callCobalt(false), callCobalt(true)]);
-  return { videoUrl, audioUrl };
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Accept": "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ url, downloadMode: "video" })
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.url) return json.url;
+      }
+    } catch (err) {}
+  }
+  return null;
 }
 
 app.post("/api/info", async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "الرابط مطلوب" });
-  
-  let targetUrl = url.trim();
 
-  try {
-    const ytdlExecutable = await ensureYtdl();
-    const { stdout } = await execAsync(`"${ytdlExecutable}" -j "${targetUrl}"`, { timeout: 15000 });
-    if (stdout.trim()) {
-      const info = JSON.parse(stdout);
-      return res.json({
-        title: info.title || "فيديو",
-        thumbnail: info.thumbnail || "",
-        duration: info.duration || 0,
-        uploader: info.uploader || "مجهول",
-        platform: info.extractor || "YouTube",
-        directUrl: info.url || "",
-        formats: info.formats?.map(f => ({ url: f.url, ext: f.ext, resolution: f.resolution })) || [],
-        originalUrl: targetUrl
-      });
-    }
-  } catch (err) {}
+  const targetUrl = url.trim();
 
-  const cobalt = await fetchCobaltFormats(targetUrl);
-  if (cobalt.videoUrl) {
+  // فحص إذا كان الرابط يخص تيك توك
+  if (targetUrl.includes("tiktok.com") || targetUrl.includes("douyin.com")) {
+    const tiktokData = await fetchTikwmFallback(targetUrl);
+    if (tiktokData) return res.json(tiktokData);
+  }
+
+  // الاستخراج العام عبر Cobalt
+  const directUrl = await fetchCobaltFormats(targetUrl);
+  if (directUrl) {
     return res.json({
-      title: "فيديو تواصل اجتماعي",
+      title: "فيديو مستخرج بنجاح",
       thumbnail: "",
-      directUrl: cobalt.videoUrl,
-      formats: [{ url: cobalt.videoUrl, ext: "mp4", resolution: "HD" }],
+      directUrl: directUrl,
+      formats: [{ url: directUrl, ext: "mp4", resolution: "HD" }],
       originalUrl: targetUrl
     });
   }
 
-  return res.status(500).json({ error: "تعذر استخراج بيانات الفيديو" });
+  return res.status(500).json({ error: "تعذر استخراج بيانات الفيديو، يرجى التأكد من الرابط." });
 });
 
 app.get("/", (req, res) => {
   res.json({ status: "online", message: "Video Downloader Server API is running smoothly!" });
 });
-
-// Local listen support
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, "0.0.0.0", async () => {
-    await ensureYtdl();
-    console.log(`Server running on port ${PORT}`);
-  });
-}
 
 export default app;

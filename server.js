@@ -1,5 +1,5 @@
-import express from 'express';
-import cors from 'cors';
+const express = require('express');
+const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,76 +9,57 @@ app.use(express.json());
 
 // Fallback Extractors for TikTok / Social Media
 async function fetchTikwmFallback(url) {
-  try {
-    const res = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`, {
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-    if (res.ok) {
-      const json = await res.json();
-      if (json.code === 0 && json.data) {
-        const d = json.data;
-        return {
-          title: d.title || "فيديو تيك توك",
-          duration: d.duration || 0,
-          thumbnail: d.cover || "",
-          uploader: d.author?.nickname || "مستخدم",
-          platform: "TikTok",
-          directUrl: d.play || d.wmplay || "",
-          formats: [{ ext: "mp4", resolution: "HD", url: d.play || "" }]
-        };
-      }
-    }
-  } catch (err) {}
-  return null;
-}
-
-async function fetchCobaltFormats(url) {
-  const endpoints = ["https://api.cobalt.tools/", "https://co.wuk.sh/"];
-  for (const endpoint of endpoints) {
     try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Accept": "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify({ url, downloadMode: "video" })
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.url) return json.url;
-      }
-    } catch (err) {}
-  }
-  return null;
+        const res = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`, {
+            headers: { "User-Agent": "Mozilla/5.0" }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data && data.code === 0 && data.data) {
+                return {
+                    title: data.data.title || 'TikTok Video',
+                    duration: data.data.duration || 0,
+                    thumbnail: data.data.cover || '',
+                    downloads: [
+                        { quality: 'HD (No Watermark)', url: data.data.play, format: 'mp4', extension: 'mp4', should_download: true },
+                        { quality: 'Watermarked', url: data.data.wmplay, format: 'mp4', extension: 'mp4', should_download: true },
+                        { quality: 'Audio (MP3)', url: data.data.music, format: 'mp3', extension: 'mp3', should_download: true }
+                    ]
+                };
+            }
+        }
+    } catch (e) {
+        console.error('Tikwm fallback error:', e.message);
+    }
+    return null;
 }
 
-app.post("/api/info", async (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: "الرابط مطلوب" });
+// Main Download Endpoint
+app.post('/api/download', async (req, res) => {
+    const { url } = req.body;
+    if (!url) {
+        return res.status(400).json({ error: 'الرجاء إدخال رابط الفيديو' });
+    }
 
-  const targetUrl = url.trim();
+    try {
+        // محاولة جلب البيانات عبر التابع الاحتياطي
+        let result = await fetchTikwmFallback(url);
+        
+        if (!result) {
+            return res.status(500).json({ error: 'عذراً، لم نتمكن من جلب روابط التحميل لهذا الفيديو حالياً.' });
+        }
 
-  // فحص إذا كان الرابط يخص تيك توك
-  if (targetUrl.includes("tiktok.com") || targetUrl.includes("douyin.com")) {
-    const tiktokData = await fetchTikwmFallback(targetUrl);
-    if (tiktokData) return res.json(tiktokData);
-  }
-
-  // الاستخراج العام عبر Cobalt
-  const directUrl = await fetchCobaltFormats(targetUrl);
-  if (directUrl) {
-    return res.json({
-      title: "فيديو مستخرج بنجاح",
-      thumbnail: "",
-      directUrl: directUrl,
-      formats: [{ url: directUrl, ext: "mp4", resolution: "HD" }],
-      originalUrl: targetUrl
-    });
-  }
-
-  return res.status(500).json({ error: "تعذر استخراج بيانات الفيديو، يرجى التأكد من الرابط." });
+        res.json(result);
+    } catch (error) {
+        console.error('Download error:', error);
+        res.status(500.0).json({ error: 'حدث خطأ أثناء معالجة الطلب' });
+    }
 });
 
-app.get("/", (req, res) => {
-  res.json({ status: "online", message: "Video Downloader Server API is running smoothly!" });
+app.get('/', (req, res) => {
+    res.send('Video Downloader API is running successfully!');
 });
 
-export default app;
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});

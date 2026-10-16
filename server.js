@@ -7,18 +7,38 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// دالة جلب الروابط باستخدام واجهات Cobalt الموثوقة والآمنة لبيئة Vercel
+// Fallback Extractors for TikTok / Social Media
+async function fetchTikwmFallback(url) {
+  try {
+    const res = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(url)}`, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.code === 0 && json.data) {
+        const d = json.data;
+        return {
+          title: d.title || "فيديو تيك توك",
+          duration: d.duration || 0,
+          thumbnail: d.cover || "",
+          uploader: d.author?.nickname || "مستخدم",
+          platform: "TikTok",
+          directUrl: d.play || d.wmplay || "",
+          formats: [{ ext: "mp4", resolution: "HD", url: d.play || "" }]
+        };
+      }
+    }
+  } catch (err) {}
+  return null;
+}
+
 async function fetchCobaltFormats(url) {
   const endpoints = ["https://api.cobalt.tools/", "https://co.wuk.sh/"];
   for (const endpoint of endpoints) {
     try {
       const res = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json",
-          "User-Agent": "Mozilla/5.0"
-        },
+        headers: { "Accept": "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ url, downloadMode: "video" })
       });
       if (res.ok) {
@@ -32,16 +52,21 @@ async function fetchCobaltFormats(url) {
 
 app.post("/api/info", async (req, res) => {
   const { url } = req.body;
-  if (!url) {
-    return res.status(400).json({ error: "الرابط مطلوب" });
-  }
+  if (!url) return res.status(400).json({ error: "الرابط مطلوب" });
 
   const targetUrl = url.trim();
-  const directUrl = await fetchCobaltFormats(targetUrl);
 
+  // فحص إذا كان الرابط يخص تيك توك
+  if (targetUrl.includes("tiktok.com") || targetUrl.includes("douyin.com")) {
+    const tiktokData = await fetchTikwmFallback(targetUrl);
+    if (tiktokData) return res.json(tiktokData);
+  }
+
+  // الاستخراج العام عبر Cobalt
+  const directUrl = await fetchCobaltFormats(targetUrl);
   if (directUrl) {
     return res.json({
-      title: "فيديو تواصل اجتماعي",
+      title: "فيديو مستخرج بنجاح",
       thumbnail: "",
       directUrl: directUrl,
       formats: [{ url: directUrl, ext: "mp4", resolution: "HD" }],
@@ -53,7 +78,7 @@ app.post("/api/info", async (req, res) => {
 });
 
 app.get("/", (req, res) => {
-  res.status(200).json({ status: "online", message: "Video Downloader Server API is running smoothly on Vercel!" });
+  res.json({ status: "online", message: "Video Downloader Server API is running smoothly!" });
 });
 
 export default app;
